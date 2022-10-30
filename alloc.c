@@ -3,7 +3,7 @@
 #include <stdlib.h>
 
 #define PAGE_SIZE 4096
-#define HEADER_SIZE sizeof(size_t)
+#define HEADER_SIZE sizeof(struct mem_blk_header)
 #define ALIGNMENT 8
 #define ALIGN(size) (((size) + (ALIGNMENT-1)) & ~(ALIGNMENT-1))
 #define ALIGN_DOWN(size) ((size / ALIGNMENT) * ALIGNMENT)
@@ -105,6 +105,56 @@ struct free_blk_header* alloc_block(struct free_blk_header* free_blk, size_t blk
     return free_blk;
 }
 
+void coalesce(struct free_blk_header* free_blk) {
+    struct free_blk_header *left_blk = NULL;  // block to the right
+    struct free_blk_header *right_blk = NULL; // block to the left
+
+    // If a block exists to the left, check if it's free
+    if (free_blk != heap_start)
+    {
+        struct mem_blk_header *left_tail = (char *)free_blk - HEADER_SIZE;
+        if ((left_tail->size & 1) == 0)
+        {
+            left_blk = (char *)free_blk - left_tail->size;
+        }
+    }
+    // If block exists to the right, check if it's free
+    if (((char *)free_blk + free_blk->size) != heap_end)
+    {
+        struct mem_blk_header *right_head = (char *)free_blk + free_blk->size;
+        if ((right_head->size & 1) == 0)
+        {
+            right_blk = right_head; // Right is unallocated so we can include in coalesce
+        }
+    }
+
+    size_t new_blk_size = free_blk->size;
+
+    // If block to the left is free
+    // Change blk_to_free pointer to point to left block so we change header of block on left if exists
+    // Change guard at end of right header
+    // Change size first so we can jump to end of new coalesced block
+    if (left_blk)
+    {
+        left_blk->next = free_blk->next;
+        free_blk = left_blk;
+        new_blk_size += left_blk->size;
+    }
+    // If block to the right is free
+    if (right_blk)
+    {
+        free_blk->next = right_blk->next;
+        if (right_blk->next)
+        {
+            right_blk->next->prev = free_blk;
+        }
+        new_blk_size += right_blk->size;
+    }
+
+    free_blk->size = new_blk_size;
+    ((struct mem_blk_header *)((char *)free_blk + new_blk_size - HEADER_SIZE))->size = new_blk_size;
+}
+
 // Allocate 
 void* smalloc(size_t size) {
     void* return_mem = NULL;
@@ -131,14 +181,14 @@ void* smalloc(size_t size) {
     }
 
     // Return pointer to the start of payload
-    return ((void*)(return_mem + HEADER_SIZE));
+    return ((void*)(((char *)return_mem) + HEADER_SIZE));
 }
 
 void sfree(void* payload_start) {
-    struct free_blk_header* blk_to_free = payload_start - HEADER_SIZE; // Find start of block
+    struct free_blk_header* blk_to_free = ((char*)payload_start) - HEADER_SIZE; // Find start of block
     // Mark unallocated
-    blk_to_free->size = blk_to_free->size & ~1L;
-    ((struct mem_blk_header *)((char *)blk_to_free + blk_to_free->size - HEADER_SIZE))->size = blk_to_free->size & ~1L;
+    blk_to_free->size = blk_to_free->size & ~1L; // write macro to make clearer
+    ((struct mem_blk_header *)((char *)blk_to_free + blk_to_free->size - HEADER_SIZE))->size = blk_to_free->size & ~1L; // another macro
     blk_to_free->prev = NULL;
     blk_to_free->next = NULL;
 
@@ -157,6 +207,7 @@ void sfree(void* payload_start) {
                 first_free = blk_to_free; // Start of free list
             }
             blk_to_free->next = list_iter;
+            blk_to_free->prev = list_iter->prev;
             list_iter->prev = blk_to_free;
             break;
         }
@@ -175,44 +226,11 @@ void sfree(void* payload_start) {
         last_free->next = blk_to_free;
     }
 
-    struct free_blk_header* left_blk = NULL; // block to the right
-    struct free_blk_header* right_blk = NULL; // block to the left
-
-    // If a block exists to the left, check if it's free
-    if(blk_to_free != heap_start) {
-        struct mem_blk_header* left_tail = (char*)blk_to_free - HEADER_SIZE;
-        if((left_tail->size & 1) == 0) {
-            left_blk = (char*)blk_to_free - left_tail->size;
-        }
-    }
-    // If block exists to the right, check if it's free
-    if(((char*)blk_to_free + blk_to_free->size) != heap_end) {
-        struct mem_blk_header* right_head = (char*)blk_to_free + blk_to_free->size;
-        if((right_head->size & 1) == 0) {
-            right_blk = right_head; // Right is unallocated so we can include in coalesce
-        }
-    }
-
-    size_t new_blk_size = blk_to_free->size & ~1L;
-
-    // If block to the left is free
-    if(left_blk) {
-        blk_to_free->prev = left_blk->prev;
-        new_blk_size += left_blk->size - 2*HEADER_SIZE;
-    }
-    // If block to the right is free
-    if(right_blk) {
-        blk_to_free->next = right_blk->next;
-        new_blk_size += right_blk->size - 2*HEADER_SIZE;
-    }
-
-    blk_to_free->size = new_blk_size;
-    ((struct mem_blk_header*)((char*)blk_to_free + new_blk_size - HEADER_SIZE))->size = new_blk_size;
-
-    // either coalesce left and mid, mid and right, or left mid and right
+    coalesce(blk_to_free);
 }
 
 int main() {
+    // Verify nothing is overwritten by writing increasing integers & checking all there
     printf("Hello World!");
     void* seg1 = smalloc(2048);
     void* seg2 = smalloc(73);
@@ -224,4 +242,5 @@ int main() {
     sfree(seg3);
     sfree(seg2);
     sfree(seg4);
+    sfree(seg5);
 }
