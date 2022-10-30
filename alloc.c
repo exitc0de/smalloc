@@ -1,6 +1,7 @@
 // Memory allocation
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdbool.h>
 
 #define PAGE_SIZE 4096
 #define HEADER_SIZE sizeof(struct mem_blk_header)
@@ -40,6 +41,36 @@ size_t ptr_distance(char* p1, char* p2) {
     return p2 - p1;
 }
 
+bool is_alloc(struct mem_blk_header* header) {
+    if((header->size & 1) == 0) {
+        return false;
+    }
+    else return true;
+}
+
+void set_headers(struct mem_blk_header* blk_head, bool alloc, size_t size) {
+    size_t new_size;
+    size_t actual_size;
+
+    // If block is currently allocated, actual size = size with last bit cleared
+    if(is_alloc(blk_head)) {
+        actual_size = size & ~1L; // clear last bit
+    }
+    else {
+        actual_size = size;
+    }
+
+    if(alloc) {
+        new_size = size | 1; // set last bit
+    }
+    else {
+        new_size = size & ~1L; // clear last bit
+    }
+
+    blk_head->size = new_size;
+    ((struct mem_blk_header *)((char *)blk_head + actual_size - HEADER_SIZE))->size = new_size;
+}
+
 // If first_free = NULL, i.e. free list empty, last_free is assumed to be NULL and not touched anyway
 struct free_blk_header* extend_heap(size_t blk_size, struct free_blk_header* last_free) {
     int num_pages = (blk_size + (PAGE_SIZE - 1)) / PAGE_SIZE;
@@ -52,8 +83,7 @@ struct free_blk_header* extend_heap(size_t blk_size, struct free_blk_header* las
     }
 
     heap_end = (char*)new_free_node + PAGE_SIZE * num_pages;
-    new_free_node->size = PAGE_SIZE * num_pages;
-    ((struct mem_blk_header *)(heap_end - HEADER_SIZE))->size = PAGE_SIZE * num_pages;
+    set_headers(new_free_node, false, PAGE_SIZE * num_pages);
 
     if(!first_free) {
         // Our free list is empty, this is our first free node
@@ -79,14 +109,14 @@ struct free_blk_header* alloc_block(struct free_blk_header* free_blk, size_t blk
         new_free_blk->size = extra_size;
         new_free_blk->next = free_blk->next;
         free_blk->next = new_free_blk;
+        //set_headers(new_free_blk, false, extra_size);
         ((struct mem_blk_header *)((char*)new_free_blk + extra_size - HEADER_SIZE))->size = extra_size;
     } else {
         // Add padding to block size
         blk_size += extra_size;
     }
 
-    free_blk->size = blk_size | 1; // Mark allocated
-    ((struct mem_blk_header *)((char*)free_blk + blk_size - HEADER_SIZE))->size = blk_size | 1; // Mark allocated
+    set_headers(free_blk, true, blk_size); // Mark allocated 
 
     // If not the first element in free list
     if (free_blk->prev) {
@@ -113,7 +143,7 @@ void coalesce(struct free_blk_header* free_blk) {
     if (free_blk != heap_start)
     {
         struct mem_blk_header *left_tail = (char *)free_blk - HEADER_SIZE;
-        if ((left_tail->size & 1) == 0)
+        if (!is_alloc(left_tail))
         {
             left_blk = (char *)free_blk - left_tail->size;
         }
@@ -122,7 +152,7 @@ void coalesce(struct free_blk_header* free_blk) {
     if (((char *)free_blk + free_blk->size) != heap_end)
     {
         struct mem_blk_header *right_head = (char *)free_blk + free_blk->size;
-        if ((right_head->size & 1) == 0)
+        if (!is_alloc(right_head))
         {
             right_blk = right_head; // Right is unallocated so we can include in coalesce
         }
@@ -151,8 +181,7 @@ void coalesce(struct free_blk_header* free_blk) {
         new_blk_size += right_blk->size;
     }
 
-    free_blk->size = new_blk_size;
-    ((struct mem_blk_header *)((char *)free_blk + new_blk_size - HEADER_SIZE))->size = new_blk_size;
+    set_headers(free_blk, false, new_blk_size);
 }
 
 // Allocate 
@@ -187,8 +216,8 @@ void* smalloc(size_t size) {
 void sfree(void* payload_start) {
     struct free_blk_header* blk_to_free = ((char*)payload_start) - HEADER_SIZE; // Find start of block
     // Mark unallocated
-    blk_to_free->size = blk_to_free->size & ~1L; // write macro to make clearer
-    ((struct mem_blk_header *)((char *)blk_to_free + blk_to_free->size - HEADER_SIZE))->size = blk_to_free->size & ~1L; // another macro
+    set_headers(blk_to_free, false, blk_to_free->size);
+
     blk_to_free->prev = NULL;
     blk_to_free->next = NULL;
 
