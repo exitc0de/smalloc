@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
+#include <pthread.h>
 
 #define PAGE_SIZE 4096
 #define HEADER_SIZE sizeof(struct mem_blk_header)
@@ -10,10 +11,20 @@
 #define ALIGN_DOWN(size) ((size / ALIGNMENT) * ALIGNMENT)
 #define MIN_BLK_SIZE ALIGN(HEADER_SIZE + sizeof(struct free_blk_header))
 
+pthread_mutex_t free_list_lock;
 // Malloc:
 // Find space in free list
 // Extend free list if necessary 
 // Allocate and adjust free list
+
+struct region
+{
+    int id;
+    struct free_blk_header* first_free;
+    void* heap_end;
+    void* heap_start;
+    pthread_mutex_t free_list_lock;
+};
 
 struct mem_blk_header
 {
@@ -189,6 +200,7 @@ void* smalloc(size_t size) {
     void* return_mem = NULL;
     size_t blk_size = ALIGN(size + 2 * sizeof(struct mem_blk_header));
 
+    pthread_mutex_lock(&free_list_lock);
     struct free_blk_header* next_free = first_free;
     struct free_blk_header* last_free = first_free;
 
@@ -209,11 +221,14 @@ void* smalloc(size_t size) {
         return_mem = alloc_block(extend_heap(blk_size, last_free), blk_size);
     }
 
+    pthread_mutex_unlock(&free_list_lock);
+
     // Return pointer to the start of payload
     return ((void*)(((char *)return_mem) + HEADER_SIZE));
 }
 
 void sfree(void* payload_start) {
+    pthread_mutex_lock(&free_list_lock);
     struct free_blk_header* blk_to_free = ((char*)payload_start) - HEADER_SIZE; // Find start of block
     // Mark unallocated
     set_headers(blk_to_free, false, blk_to_free->size);
@@ -256,10 +271,12 @@ void sfree(void* payload_start) {
     }
 
     coalesce(blk_to_free);
+    pthread_mutex_unlock(&free_list_lock);
 }
 
 int main() {
     // Verify nothing is overwritten by writing increasing integers & checking all there
+    int status = pthread_mutex_init(&free_list_lock, NULL);
     printf("Hello World!");
     void* seg1 = smalloc(2048);
     void* seg2 = smalloc(73);
